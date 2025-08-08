@@ -124,7 +124,7 @@ impl<'a> Builder<'a> {
         // explain why in far too much detail.
         attrs.size = std::mem::size_of::<perf_event_attr>() as u32;
 
-        let mut builder = Self {
+        let builder = Self {
             attrs,
             who: EventPid::ThisProcess,
             cpu: None,

@@ -2,6 +2,7 @@ use c_enum::c_enum;
 use perf_event_open_sys::bindings;
 
 use crate::events::Event;
+use crate::ReadFormat;
 
 c_enum! {
     /// Software counters, implemented by the kernel.
@@ -63,5 +64,7 @@ impl Event for Software {
     fn update_attrs(self, attr: &mut bindings::perf_event_attr) {
         attr.type_ = bindings::PERF_TYPE_SOFTWARE;
         attr.config = self.into();
+        attr.read_format |=
+            (ReadFormat::TOTAL_TIME_ENABLED | ReadFormat::TOTAL_TIME_RUNNING).bits();
     }
 }

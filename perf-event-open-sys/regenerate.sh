@@ -92,6 +92,9 @@ function gen_bindings {
     BINDGEN_ARGS=(
         --impl-debug
         --with-derive-default
+	--with-derive-custom ".*=zerocopy::FromBytes"
+	--with-derive-custom ".*=zerocopy::Immutable"
+	--with-derive-custom ".*=zerocopy::KnownLayout"
         --no-prepend-enum-name
     )
 
@@ -119,6 +122,14 @@ function gen_bindings {
     # added. Here we disable them. Users wanting them can set them field by
     # field if they really need it.
     sed -i "$bindings" -e 's/\( *\)pub \(fn new_bitfield_[0-9]*\)/\1#[allow(dead_code)]\n\1pub(crate) \2/g'
+
+    # Add zerocopy derives to __BindgenBitfieldUnit and __IncompleteArrayField.
+    # Unfortunately bindgen does not have a way to add custom derives to these structs today.
+    # See: https://github.com/rust-lang/rust-bindgen/issues/2168 and https://github.com/rust-lang/rust-bindgen/issues/3196.
+    # Rust-VMM has the same problem:
+    # https://github.com/rust-vmm/kvm/blob/bd3260e132706a07e1422be5a0b02e49736329bb/kvm-bindings/CONTRIBUTING.md
+    sed -i "$bindings" -e 's/\(pub struct __BindgenBitfieldUnit.*\)/#[derive(zerocopy::FromBytes, zerocopy::Immutable, zerocopy::KnownLayout)]\n\1/g'
+    sed -i "$bindings" -e 's/\(pub struct __IncompleteArrayField.*\)/#[derive(zerocopy::FromBytes, zerocopy::Immutable, zerocopy::KnownLayout)]\n\1/g'
 
     cat src/bindings_header.rs      \
         "$bindings"                 \

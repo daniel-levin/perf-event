@@ -79,6 +79,8 @@ impl Tracepoint {
 impl Event for Tracepoint {
     fn update_attrs(self, attr: &mut bindings::perf_event_attr) {
         attr.type_ = bindings::PERF_TYPE_TRACEPOINT;
+        attr.set_exclude_kernel(0);
+        attr.sample_type |= crate::SampleFlag::RAW.bits();
         attr.config = self.id;
     }
 }

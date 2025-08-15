@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use perf_event_open_sys::bindings;
 use thiserror::Error;
 
-use crate::events::Event;
+use crate::events::{Event, Requirement};
 
 /// Kernel tracepoint event.
 ///
@@ -82,6 +82,10 @@ impl Event for Tracepoint {
         attr.set_exclude_kernel(0);
         attr.sample_type |= crate::SampleFlag::RAW.bits();
         attr.config = self.id;
+    }
+
+    fn requirements() -> &'static [Requirement] {
+        &[Requirement::CpuSpecifiedExplicitly]
     }
 }
 

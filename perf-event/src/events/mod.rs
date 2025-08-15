@@ -62,6 +62,13 @@ pub use self::raw::Raw;
 pub use self::software::Software;
 pub use self::tracepoint::Tracepoint;
 
+/// Additional data required of the user for using this event type.
+#[derive(Debug)]
+pub enum Requirement {
+    /// Require that the user explicitly sets a CPU, such as for tracepoints.
+    CpuSpecifiedExplicitly,
+}
+
 /// An event that we can monitor or count.
 pub trait Event: Sized {
     /// Update the [`perf_event_attr`] struct so that it will record the
@@ -84,6 +91,11 @@ pub trait Event: Sized {
     fn update_attrs_with_data(self, attr: &mut perf_event_attr) -> Option<Arc<dyn EventData>> {
         self.update_attrs(attr);
         None
+    }
+
+    /// Declare additional requirements, such as needing a specific CPU in use.
+    fn requirements() -> &'static [Requirement] {
+        &[]
     }
 }
 

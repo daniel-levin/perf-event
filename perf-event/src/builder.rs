@@ -135,39 +135,113 @@ impl CpuPid {
     /// Update settings to observe just the calling process.
     /// Note: it will overwrite any previously set cgroup settings.
     pub fn observe_calling_process(&mut self) {
-        match self {
-            Self::OneProcessAnyCpu { .. } => *self = Self::ThisProcessAnyCpu,
-            _ => {}
+        if let Self::OneProcessAnyCpu { .. } = self {
+            *self = Self::ThisProcessAnyCpu
         }
     }
 
     /// Update settings to observe just one PID.
     /// Note: it will overwrite any previously set cgroup settings.
     pub fn observe_pid(&mut self, pid: pid_t) {
+        let pid = pid as usize;
         match self {
-            Self::OneProcessAnyCpu { .. } => *self = Self::ThisProcessAnyCpu,
+            Self::ThisProcessAnyCpu => *self = Self::OneProcessAnyCpu { pid },
+            Self::ThisProcessOneCpu { cpu } => *self = Self::OneProcessOneCpu { pid, cpu: *cpu },
+            Self::OneProcessAnyCpu { .. } => *self = Self::OneProcessAnyCpu { pid },
+            Self::OneProcessOneCpu { cpu, .. } => *self = Self::OneProcessOneCpu { pid, cpu: *cpu },
+            Self::AnyProcessOneCpu { cpu } => *self = Self::OneProcessOneCpu { pid, cpu: *cpu },
+            Self::CGroupAnyCpu { .. } => *self = Self::OneProcessAnyCpu { pid },
+            Self::CGroupOneCpu { cpu, .. } => *self = Self::OneProcessOneCpu { pid, cpu: *cpu },
+        }
+    }
+
+    pub fn one_cpu(&mut self, cpu: usize) {
+        match self {
+            Self::ThisProcessAnyCpu => *self = Self::ThisProcessOneCpu { cpu },
+            Self::ThisProcessOneCpu { .. } => *self = Self::ThisProcessOneCpu { cpu },
+            Self::OneProcessAnyCpu { pid } => *self = Self::OneProcessOneCpu { pid: *pid, cpu },
+            Self::OneProcessOneCpu { pid, .. } => *self = Self::OneProcessOneCpu { pid: *pid, cpu },
+            Self::AnyProcessOneCpu { .. } => *self = Self::AnyProcessOneCpu { cpu },
+            Self::CGroupAnyCpu { cgroup } => {
+                let owned_fd = cgroup.as_fd().try_clone_to_owned().unwrap();
+                *self = Self::CGroupOneCpu {
+                    cgroup: owned_fd,
+                    cpu,
+                };
+            }
+            Self::CGroupOneCpu { cgroup, .. } => {
+                let owned_fd = cgroup.as_fd().try_clone_to_owned().unwrap();
+                *self = Self::CGroupOneCpu {
+                    cgroup: owned_fd,
+                    cpu,
+                };
+            }
+        }
+    }
+
+    pub fn observe_cgroup(&mut self, cgroup: OwnedFd) {
+        match self {
+            Self::ThisProcessOneCpu { cpu }
+            | Self::OneProcessOneCpu { cpu, .. }
+            | Self::AnyProcessOneCpu { cpu }
+            | Self::CGroupOneCpu { cpu, .. } => {
+                *self = Self::CGroupOneCpu { cgroup, cpu: *cpu };
+            }
+            _ => {
+                *self = Self::CGroupAnyCpu { cgroup };
+            }
+        }
+    }
+
+    pub fn observe_any_pid(&mut self) {
+        match self {
+            Self::ThisProcessOneCpu { cpu }
+            | Self::OneProcessOneCpu { cpu, .. }
+            | Self::AnyProcessOneCpu { cpu }
+            | Self::CGroupOneCpu { cpu, .. } => {
+                *self = Self::AnyProcessOneCpu { cpu: *cpu };
+            }
+            _ => {
+                *self = Self::AnyProcessOneCpu { cpu: 0 };
+            }
+        }
+    }
+
+    pub fn observe_any_cpu(&mut self) {
+        match self {
+            Self::ThisProcessOneCpu { .. } | Self::AnyProcessOneCpu { .. } => {
+                *self = Self::ThisProcessAnyCpu
+            }
+            Self::OneProcessOneCpu { pid, .. } => *self = Self::OneProcessAnyCpu { pid: *pid },
+            Self::CGroupOneCpu { cgroup, .. } => {
+                let owned_fd = cgroup.as_fd().try_clone_to_owned().unwrap();
+                *self = Self::CGroupAnyCpu { cgroup: owned_fd };
+            }
             _ => {}
         }
     }
 
-    pub fn one_cpu(&mut self, cpu: usize) {}
-
-    pub fn observe_cgroup(&mut self, cgroup: OwnedFd) {}
-
-    pub fn observe_any_pid(&mut self) {}
-
-    pub fn observe_any_cpu(&mut self) {}
-
     /// Return a valid combination of `pid`, `cpu` and `flags` arguments.
     fn pid_cpu_flags(&self) -> (pid_t, i32, u32) {
-        match self {
+        let (pid, cpu, flags) = match self {
             Self::ThisProcessAnyCpu => (0, -1, 0),
             Self::ThisProcessOneCpu { cpu } => (0, *cpu as i32, 0),
+            Self::OneProcessAnyCpu { pid } => (*pid as pid_t, -1, 0),
+            Self::OneProcessOneCpu { pid, cpu } => (*pid as pid_t, *cpu as i32, 0),
+            Self::AnyProcessOneCpu { cpu } => (-1, *cpu as i32, 0),
             Self::CGroupAnyCpu { cgroup } => {
                 (cgroup.as_raw_fd(), -1, sys::bindings::PERF_FLAG_PID_CGROUP)
             }
-            _ => todo!(),
-        }
+            Self::CGroupOneCpu { cgroup, cpu } => (
+                cgroup.as_raw_fd(),
+                *cpu as i32,
+                sys::bindings::PERF_FLAG_PID_CGROUP,
+            ),
+        };
+
+        debug_assert!(!(pid == -1 && cpu == -1));
+
+        (pid, cpu, flags)
     }
 }
 
@@ -1083,5 +1157,109 @@ impl UnsupportedOptionsError {
     /// The size that the kernel expected the [`perf_event_attr`] struct to be.
     pub fn expected_size(&self) -> usize {
         self.expected_size as _
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_observe_pid() {
+        let mut cpu_pid = CpuPid::ThisProcessAnyCpu;
+        cpu_pid.observe_pid(1234);
+        assert!(matches!(cpu_pid, CpuPid::OneProcessAnyCpu { pid: 1234 }));
+
+        let mut cpu_pid = CpuPid::ThisProcessOneCpu { cpu: 2 };
+        cpu_pid.observe_pid(5678);
+        assert!(matches!(
+            cpu_pid,
+            CpuPid::OneProcessOneCpu { pid: 5678, cpu: 2 }
+        ));
+
+        let mut cpu_pid = CpuPid::AnyProcessOneCpu { cpu: 1 };
+        cpu_pid.observe_pid(999);
+        assert!(matches!(
+            cpu_pid,
+            CpuPid::OneProcessOneCpu { pid: 999, cpu: 1 }
+        ));
+    }
+
+    #[test]
+    fn test_one_cpu() {
+        let mut cpu_pid = CpuPid::ThisProcessAnyCpu;
+        cpu_pid.one_cpu(3);
+        assert!(matches!(cpu_pid, CpuPid::ThisProcessOneCpu { cpu: 3 }));
+
+        let mut cpu_pid = CpuPid::OneProcessAnyCpu { pid: 1234 };
+        cpu_pid.one_cpu(5);
+        assert!(matches!(
+            cpu_pid,
+            CpuPid::OneProcessOneCpu { pid: 1234, cpu: 5 }
+        ));
+
+        let mut cpu_pid = CpuPid::AnyProcessOneCpu { cpu: 1 };
+        cpu_pid.one_cpu(7);
+        assert!(matches!(cpu_pid, CpuPid::AnyProcessOneCpu { cpu: 7 }));
+    }
+
+    #[test]
+    fn test_observe_any_pid() {
+        let mut cpu_pid = CpuPid::ThisProcessOneCpu { cpu: 2 };
+        cpu_pid.observe_any_pid();
+        assert!(matches!(cpu_pid, CpuPid::AnyProcessOneCpu { cpu: 2 }));
+
+        let mut cpu_pid = CpuPid::OneProcessOneCpu { pid: 1234, cpu: 3 };
+        cpu_pid.observe_any_pid();
+        assert!(matches!(cpu_pid, CpuPid::AnyProcessOneCpu { cpu: 3 }));
+
+        let mut cpu_pid = CpuPid::ThisProcessAnyCpu;
+        cpu_pid.observe_any_pid();
+        assert!(matches!(cpu_pid, CpuPid::AnyProcessOneCpu { cpu: 0 }));
+    }
+
+    #[test]
+    fn test_observe_any_cpu() {
+        let mut cpu_pid = CpuPid::ThisProcessOneCpu { cpu: 2 };
+        cpu_pid.observe_any_cpu();
+        assert!(matches!(cpu_pid, CpuPid::ThisProcessAnyCpu));
+
+        let mut cpu_pid = CpuPid::OneProcessOneCpu { pid: 1234, cpu: 3 };
+        cpu_pid.observe_any_cpu();
+        assert!(matches!(cpu_pid, CpuPid::OneProcessAnyCpu { pid: 1234 }));
+
+        let mut cpu_pid = CpuPid::AnyProcessOneCpu { cpu: 5 };
+        cpu_pid.observe_any_cpu();
+        assert!(matches!(cpu_pid, CpuPid::ThisProcessAnyCpu));
+    }
+
+    #[test]
+    fn test_pid_cpu_flags() {
+        let cpu_pid = CpuPid::ThisProcessAnyCpu;
+        assert_eq!(cpu_pid.pid_cpu_flags(), (0, -1, 0));
+
+        let cpu_pid = CpuPid::ThisProcessOneCpu { cpu: 2 };
+        assert_eq!(cpu_pid.pid_cpu_flags(), (0, 2, 0));
+
+        let cpu_pid = CpuPid::OneProcessAnyCpu { pid: 1234 };
+        assert_eq!(cpu_pid.pid_cpu_flags(), (1234, -1, 0));
+
+        let cpu_pid = CpuPid::OneProcessOneCpu { pid: 5678, cpu: 3 };
+        assert_eq!(cpu_pid.pid_cpu_flags(), (5678, 3, 0));
+
+        let cpu_pid = CpuPid::AnyProcessOneCpu { cpu: 4 };
+        assert_eq!(cpu_pid.pid_cpu_flags(), (-1, 4, 0));
+    }
+
+    #[test]
+    fn test_observe_calling_process() {
+        let mut cpu_pid = CpuPid::OneProcessAnyCpu { pid: 1234 };
+        cpu_pid.observe_calling_process();
+        assert!(matches!(cpu_pid, CpuPid::ThisProcessAnyCpu));
+
+        let mut cpu_pid = CpuPid::ThisProcessOneCpu { cpu: 2 };
+        cpu_pid.observe_calling_process();
+        // Should remain unchanged since it's not OneProcessAnyCpu
+        assert!(matches!(cpu_pid, CpuPid::ThisProcessOneCpu { cpu: 2 }));
     }
 }

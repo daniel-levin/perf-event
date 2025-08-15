@@ -142,7 +142,7 @@ pub use perf_event_data as data;
 #[cfg(not(feature = "hooks"))]
 use perf_event_open_sys as sys;
 
-pub use crate::builder::{Builder, UnsupportedOptionsError};
+pub use crate::builder::{Builder, CpuPid, UnsupportedOptionsError};
 #[doc(inline)]
 pub use crate::data::{ReadFormat, SampleFlags as SampleFlag};
 pub use crate::flags::{Clock, SampleBranchFlag, SampleSkid};

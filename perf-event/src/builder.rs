@@ -93,6 +93,7 @@ impl RefUnwindSafe for Builder {}
 /// that invalid states are unrepresentable. Under the hood, we will convert
 /// these values to the correct, correponding signed equivalents.
 #[derive(Debug, Default)]
+#[allow(clippy::enum_variant_names)]
 pub enum CpuPid {
     /// Measure the calling process (thread) on any CPU.
     #[default]

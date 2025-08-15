@@ -1,10 +1,9 @@
 use perf_event::events::Tracepoint;
-use perf_event::Builder;
+use perf_event::{Builder, CpuPid};
 
 fn main() -> std::io::Result<()> {
     let mut counter = Builder::new(Tracepoint::with_name("net/net_dev_xmit")?)
-        .any_pid()
-        .one_cpu(0)
+        .targeting(CpuPid::AnyProcessOneCpu { cpu: 0 })
         .build()?
         .sampled(8192)?;
 

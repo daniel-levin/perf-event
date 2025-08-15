@@ -1091,6 +1091,12 @@ impl Builder {
         self.attrs.aux_sample_size = sample_size;
         self
     }
+
+    /// Which CPU and PID to target.
+    pub fn targeting(&mut self, cpu_pid: CpuPid) -> &mut Self {
+        self.who = cpu_pid;
+        self
+    }
 }
 
 impl fmt::Debug for Builder {

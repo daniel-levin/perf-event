@@ -81,6 +81,7 @@ impl Event for Tracepoint {
         attr.type_ = bindings::PERF_TYPE_TRACEPOINT;
         attr.set_exclude_kernel(0);
         attr.sample_type |= crate::SampleFlag::RAW.bits();
+        attr.sample_period = 1;
         attr.config = self.id;
     }
 

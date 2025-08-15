@@ -1,7 +1,8 @@
 use std::fmt;
 use std::fs::File;
 use std::io::{self, ErrorKind};
-use std::os::raw::{c_int, c_ulong};
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::raw::c_ulong;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::Arc;
@@ -66,12 +67,11 @@ use crate::{
 /// perf_event_attr` type.
 ///
 /// [`enable`]: Counter::enable
-#[derive(Clone)]
-pub struct Builder<'a> {
+pub struct Builder {
     attrs: perf_event_attr,
     /// Possibly holds onto a reference to a cgroup in the form of an open file
     /// whose fd is used to identify said cgroup.
-    who: CpuPid<'a>,
+    who: CpuPid,
 
     // Some events need to hold onto data that is referenced in the builder.
     // The perf_event_attr struct obviously doesn't have lifetimes so the only
@@ -80,47 +80,58 @@ pub struct Builder<'a> {
 }
 
 // Needed for backwards compat
-impl UnwindSafe for Builder<'_> {}
-impl RefUnwindSafe for Builder<'_> {}
+impl UnwindSafe for Builder {}
+impl RefUnwindSafe for Builder {}
 
 /// Couple the CPU and PID options because their validity is mutually dependent.
-/// Its methods ensure that all subsequent modifications preserve the validity
-/// of the options requested. We use unsigned integers to ensure that invalid
-/// states are unrepresentable. Under the hood, we will convert these values to
-/// the correct, correponding signed equivalents.
-#[derive(Clone, Debug, Default)]
-pub enum CpuPid<'a> {
+/// While the kernel documentation explains the meaning of the various
+/// combinations of signedness and values, we want to just use the
+/// variant that says what it does in words.
+///
+/// This enum's methods ensure that all subsequent modifications preserve
+/// the validity of the options requested. We use unsigned integers to ensure
+/// that invalid states are unrepresentable. Under the hood, we will convert
+/// these values to the correct, correponding signed equivalents.
+#[derive(Debug, Default)]
+pub enum CpuPid {
+    /// Measure the calling process (thread) on any CPU.
     #[default]
     ThisProcessAnyCpu,
 
+    /// Measure the calling process (thread) on a particular CPU.
     ThisProcessOneCpu {
         cpu: usize,
     },
 
+    /// Measure a particular process (thread) on any CPU.
     OneProcessAnyCpu {
         pid: usize,
     },
 
+    /// Measure a particular process (thread) on a particular CPU.
     OneProcessOneCpu {
         pid: usize,
         cpu: usize,
     },
 
+    /// Measure all processes (threads) on a particular CPU. Requires
+    /// `CAP_SYS_ADMIN`, or `CAP_PERFMON` (since Linux 5.8), or having
+    /// `/proc/sys/kernel/perf_event_paranoid` set to less than 1.
     AnyProcessOneCpu {
         cpu: usize,
     },
 
     CGroupAnyCpu {
-        cgroup: &'a File,
+        cgroup: OwnedFd,
     },
 
     CGroupOneCpu {
-        cgroup: &'a File,
+        cgroup: OwnedFd,
         cpu: usize,
     },
 }
 
-impl CpuPid<'_> {
+impl CpuPid {
     /// Update settings to observe just the calling process.
     /// Note: it will overwrite any previously set cgroup settings.
     pub fn observe_calling_process(&mut self) {
@@ -139,6 +150,14 @@ impl CpuPid<'_> {
         }
     }
 
+    pub fn one_cpu(&mut self, cpu: usize) {}
+
+    pub fn observe_cgroup(&mut self, cgroup: OwnedFd) {}
+
+    pub fn observe_any_pid(&mut self) {}
+
+    pub fn observe_any_cpu(&mut self) {}
+
     /// Return a valid combination of `pid`, `cpu` and `flags` arguments.
     fn pid_cpu_flags(&self) -> (pid_t, i32, u32) {
         match self {
@@ -154,7 +173,7 @@ impl CpuPid<'_> {
 
 // Methods that actually do work on the builder and aren't just setting
 // config values.
-impl<'a> Builder<'a> {
+impl Builder {
     /// Return a new `Builder`, with all parameters set to their defaults.
     ///
     /// Return a new `Builder` for the specified event.
@@ -368,9 +387,7 @@ impl<'a> Builder<'a> {
             Err(e) => Err(e),
         }
     }
-}
 
-impl<'a> Builder<'a> {
     /// Directly access the [`perf_event_attr`] within this builder.
     pub fn attrs(&self) -> &perf_event_attr {
         &self.attrs
@@ -412,7 +429,7 @@ impl<'a> Builder<'a> {
     /// [`one_cpu`]: Builder::one_cpu
     /// [cap]: https://www.mankier.com/7/capabilities
     pub fn any_pid(&mut self) -> &mut Self {
-        self.who = CpuPid::Any;
+        self.who.observe_any_pid();
         self
     }
 
@@ -421,14 +438,15 @@ impl<'a> Builder<'a> {
     /// in the cgroupfs filesystem.
     ///
     /// [man-cgroups]: https://www.mankier.com/7/cgroups
-    pub fn observe_cgroup(&mut self, cgroup: &'a File) -> &mut Self {
-        self.who = CpuPid::CGroup(cgroup);
+    pub fn observe_cgroup(&mut self, cgroup: &File) -> &mut Self {
+        let owned_fd = cgroup.as_fd().try_clone_to_owned().unwrap();
+        self.who.observe_cgroup(owned_fd);
         self
     }
 
     /// Observe only code running on the given CPU core.
     pub fn one_cpu(&mut self, cpu: usize) -> &mut Self {
-        self.cpu = Some(cpu);
+        self.who.one_cpu(cpu);
         self
     }
 
@@ -445,7 +463,7 @@ impl<'a> Builder<'a> {
     /// [`observe_pid`]: Builder::observe_pid
     /// [`observe_cgroup`]: Builder::observe_cgroup
     pub fn any_cpu(&mut self) -> &mut Self {
-        self.cpu = None;
+        self.who.observe_any_cpu();
         self
     }
 
@@ -499,7 +517,7 @@ impl<'a> Builder<'a> {
 
 // Section for methods which directly modify attrs. These should correspond
 // roughly 1-to-1 with the entries as documented in the manpage.
-impl<'a> Builder<'a> {
+impl Builder {
     /// Whether this counter should start off enabled.
     ///
     /// When this is set, the counter will immediately start being recorded as
@@ -1005,7 +1023,7 @@ impl<'a> Builder<'a> {
     }
 }
 
-impl fmt::Debug for Builder<'_> {
+impl fmt::Debug for Builder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Builder")
             .field("attrs", &self.attrs)

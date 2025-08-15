@@ -254,8 +254,6 @@ impl Builder {
     pub fn new<E: Event>(event: E) -> Self {
         let mut attrs = perf_event_attr::default();
 
-        // Do the update_attrs bit before we set any of the default state so
-        // that user code can't break configuration we really care about.
         let data = event.update_attrs_with_data(&mut attrs);
 
         // Setting `size` accurately will not prevent the code from working
@@ -269,9 +267,6 @@ impl Builder {
             event_data: data,
         };
 
-        builder.enabled(false);
-        builder.exclude_kernel(true);
-        builder.exclude_hv(true);
         builder.read_format(ReadFormat::TOTAL_TIME_ENABLED | ReadFormat::TOTAL_TIME_RUNNING);
         builder
     }

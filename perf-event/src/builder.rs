@@ -9,6 +9,7 @@ use std::sync::Arc;
 use libc::pid_t;
 use perf_event_data::parse::ParseConfig;
 use perf_event_open_sys::bindings;
+use thiserror::Error;
 
 use crate::events::{Event, EventData};
 use crate::sys::bindings::perf_event_attr;
@@ -1014,7 +1015,8 @@ impl fmt::Debug for Builder<'_> {
 ///
 /// println!("The expected size was {}", inner.expected_size());
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("perf_event_attr contained options not valid for the current kernel")]
 pub struct UnsupportedOptionsError {
     expected_size: u32,
 }
@@ -1029,11 +1031,3 @@ impl UnsupportedOptionsError {
         self.expected_size as _
     }
 }
-
-impl fmt::Display for UnsupportedOptionsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("perf_event_attr contained options not valid for the current kernel")
-    }
-}
-
-impl std::error::Error for UnsupportedOptionsError {}

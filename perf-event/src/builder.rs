@@ -69,8 +69,9 @@ use crate::{
 #[derive(Clone)]
 pub struct Builder<'a> {
     attrs: perf_event_attr,
-    who: EventPid<'a>,
-    cpu: Option<usize>,
+    /// Possibly holds onto a reference to a cgroup in the form of an open file
+    /// whose fd is used to identify said cgroup.
+    who: CpuPid<'a>,
 
     // Some events need to hold onto data that is referenced in the builder.
     // The perf_event_attr struct obviously doesn't have lifetimes so the only
@@ -82,29 +83,71 @@ pub struct Builder<'a> {
 impl UnwindSafe for Builder<'_> {}
 impl RefUnwindSafe for Builder<'_> {}
 
-#[derive(Clone, Debug)]
-enum EventPid<'a> {
-    /// Monitor the calling process.
-    ThisProcess,
+/// Couple the CPU and PID options because their validity is mutually dependent.
+/// Its methods ensure that all subsequent modifications preserve the validity
+/// of the options requested. We use unsigned integers to ensure that invalid
+/// states are unrepresentable. Under the hood, we will convert these values to
+/// the correct, correponding signed equivalents.
+#[derive(Clone, Debug, Default)]
+pub enum CpuPid<'a> {
+    #[default]
+    ThisProcessAnyCpu,
 
-    /// Monitor the given pid.
-    Other(pid_t),
+    ThisProcessOneCpu {
+        cpu: usize,
+    },
 
-    /// Monitor members of the given cgroup.
-    CGroup(&'a File),
+    OneProcessAnyCpu {
+        pid: usize,
+    },
 
-    /// Monitor any process on some given CPU.
-    Any,
+    OneProcessOneCpu {
+        pid: usize,
+        cpu: usize,
+    },
+
+    AnyProcessOneCpu {
+        cpu: usize,
+    },
+
+    CGroupAnyCpu {
+        cgroup: &'a File,
+    },
+
+    CGroupOneCpu {
+        cgroup: &'a File,
+        cpu: usize,
+    },
 }
 
-impl<'a> EventPid<'a> {
-    // Return the `pid` arg and the `flags` bits representing `self`.
-    fn as_args(&self) -> (pid_t, u32) {
+impl CpuPid<'_> {
+    /// Update settings to observe just the calling process.
+    /// Note: it will overwrite any previously set cgroup settings.
+    pub fn observe_calling_process(&mut self) {
         match self {
-            EventPid::Any => (-1, 0),
-            EventPid::ThisProcess => (0, 0),
-            EventPid::Other(pid) => (*pid, 0),
-            EventPid::CGroup(file) => (file.as_raw_fd(), sys::bindings::PERF_FLAG_PID_CGROUP),
+            Self::OneProcessAnyCpu { .. } => *self = Self::ThisProcessAnyCpu,
+            _ => {}
+        }
+    }
+
+    /// Update settings to observe just one PID.
+    /// Note: it will overwrite any previously set cgroup settings.
+    pub fn observe_pid(&mut self, pid: pid_t) {
+        match self {
+            Self::OneProcessAnyCpu { .. } => *self = Self::ThisProcessAnyCpu,
+            _ => {}
+        }
+    }
+
+    /// Return a valid combination of `pid`, `cpu` and `flags` arguments.
+    fn pid_cpu_flags(&self) -> (pid_t, i32, u32) {
+        match self {
+            Self::ThisProcessAnyCpu => (0, -1, 0),
+            Self::ThisProcessOneCpu { cpu } => (0, *cpu as i32, 0),
+            Self::CGroupAnyCpu { cgroup } => {
+                (cgroup.as_raw_fd(), -1, sys::bindings::PERF_FLAG_PID_CGROUP)
+            }
+            _ => todo!(),
         }
     }
 }
@@ -129,8 +172,7 @@ impl<'a> Builder<'a> {
 
         let mut builder = Self {
             attrs,
-            who: EventPid::ThisProcess,
-            cpu: None,
+            who: CpuPid::default(),
             event_data: data,
         };
 
@@ -299,12 +341,7 @@ impl<'a> Builder<'a> {
         // must not exceed the size of perf_event_attr.
         assert!(self.attrs.size <= std::mem::size_of::<perf_event_attr>() as u32);
 
-        let cpu = match self.cpu {
-            Some(cpu) => cpu as c_int,
-            None => -1,
-        };
-
-        let (pid, flags) = self.who.as_args();
+        let (pid, cpu, flags) = self.who.pid_cpu_flags();
         let group_fd = group_fd.unwrap_or(-1);
 
         // Enable CLOEXEC by default. This the behaviour that the rust stdlib
@@ -346,7 +383,7 @@ impl<'a> Builder<'a> {
 
     /// Observe the calling process. (This is the default.)
     pub fn observe_self(&mut self) -> &mut Self {
-        self.who = EventPid::ThisProcess;
+        self.who.observe_calling_process();
         self
     }
 
@@ -355,7 +392,7 @@ impl<'a> Builder<'a> {
     ///
     /// [man-capabilities]: https://www.mankier.com/7/capabilities
     pub fn observe_pid(&mut self, pid: pid_t) -> &mut Self {
-        self.who = EventPid::Other(pid);
+        self.who.observe_pid(pid);
         self
     }
 
@@ -375,7 +412,7 @@ impl<'a> Builder<'a> {
     /// [`one_cpu`]: Builder::one_cpu
     /// [cap]: https://www.mankier.com/7/capabilities
     pub fn any_pid(&mut self) -> &mut Self {
-        self.who = EventPid::Any;
+        self.who = CpuPid::Any;
         self
     }
 
@@ -385,7 +422,7 @@ impl<'a> Builder<'a> {
     ///
     /// [man-cgroups]: https://www.mankier.com/7/cgroups
     pub fn observe_cgroup(&mut self, cgroup: &'a File) -> &mut Self {
-        self.who = EventPid::CGroup(cgroup);
+        self.who = CpuPid::CGroup(cgroup);
         self
     }
 
@@ -973,7 +1010,6 @@ impl fmt::Debug for Builder<'_> {
         f.debug_struct("Builder")
             .field("attrs", &self.attrs)
             .field("who", &self.who)
-            .field("cpu", &self.cpu)
             .field(
                 "event_data",
                 &self.event_data.as_ref().map(|_| "<dyn EventData>"),
